@@ -68,6 +68,24 @@ jobs:
           mkdir -p out/udon/logs
           set -o pipefail
           ./unixnu build kernel 2>&1 | tee out/udon/logs/kernel-step.log
+      - name: Publish the failure log
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "=== grep ==="
+            grep -n -i -E "error:|failed|Error|Traceback" out/udon/logs/kernel-step.log | head -n 80 || true
+            echo "=== tail ==="
+            tail -n 250 out/udon/logs/kernel-step.log || true
+          } > /tmp/kernel-tail.log
+          git config user.name ci
+          git config user.email ci@example.com
+          git checkout -B ci-log
+          cp /tmp/kernel-tail.log kernel-build-tail.log
+          git add -f kernel-build-tail.log
+          git commit -m "ci: kernel build log tail" || true
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/wwq0415/UniXNU-ace2.git" HEAD:refs/heads/ci-log
       - name: Upload outputs
         if: always()
         uses: actions/upload-artifact@v4
