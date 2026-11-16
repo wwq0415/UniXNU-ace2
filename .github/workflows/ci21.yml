@@ -122,11 +122,18 @@ jobs:
         run: |
           TREE="$GITHUB_WORKSPACE/out/udon/tree"
           mkdir -p "$TREE/build/storage-abi/include/IOKit/storage"
-          cp "$TREE"/refer/IOStorageFamily/*.h "$TREE/build/storage-abi/include/IOKit/storage/" 2>/dev/null || echo "no refer/IOStorageFamily headers"
+          echo "--- tree top"
+          ls "$TREE" || true
+          echo "--- refer dirs"
+          ls "$TREE/refer" 2>/dev/null || true
+          echo "--- IOStorageFamily candidates"
+          find "$TREE/refer" -maxdepth 2 -iname '*StorageFamily*' 2>/dev/null | head -n 10 || true
+          cp "$TREE"/refer/IOStorageFamily/*.h "$TREE/build/storage-abi/include/IOKit/storage/" 2>/dev/null || echo "no refer headers copied"
           SDK="$(xcrun --sdk macosx --show-sdk-path)"
-          cp "$SDK/usr/include/TargetConditionals.h" "$TREE/build/storage-abi/include/TargetConditionals.h"
-          ls "$TREE/build/storage-abi/include/IOKit/storage" | head -n 10
-          ls -l "$TREE/build/storage-abi/include/IOKit/storage/IOBlockStorageDevice.h"
+          cp "$SDK/usr/include/TargetConditionals.h" "$TREE/build/storage-abi/include/TargetConditionals.h" 2>/dev/null || echo "no TargetConditionals in SDK"
+          echo "--- storage-abi headers"
+          ls "$TREE/build/storage-abi/include/IOKit/storage" 2>/dev/null | head -n 12 || true
+          if [ -f "$TREE/build/storage-abi/include/IOKit/storage/IOBlockStorageDevice.h" ]; then echo "IOBlockStorageDevice.h present"; else echo "IOBlockStorageDevice.h MISSING"; fi
       - name: Build kernel
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -151,15 +158,13 @@ jobs:
             echo "=== archives ==="
             ls -l out/udon/kernel 2>/dev/null || true
             echo "=== step grep ==="
-            grep -n -i -E "error:|failed|Error|Traceback|No such file|not found|Undefined" out/udon/logs/kernel-step.log | head -n 60 || true
+            grep -n -i -E "error:|failed|Error|Traceback|No such file|not found|Undefined|MISSING" out/udon/logs/kernel-step.log | head -n 60 || true
             echo "=== archive logs ==="
             for f in out/udon/logs/archive-*.log; do
               [ -f "$f" ] || continue
               echo "--- $f"
               tail -n 30 "$f" || true
             done
-            echo "=== bootstrap tail ==="
-            tail -n 60 out/udon/logs/kernel-bootstrap.log 2>/dev/null || true
             echo "=== kernel undef ==="
             grep -n -A20 "Undefined symbols for architecture arm64" out/udon/logs/kernel.log 2>/dev/null | head -n 40 || true
             echo "=== kernel tail ==="
