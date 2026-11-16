@@ -101,32 +101,24 @@ jobs:
           p.write_text(s)
           print("deferred prebuilt checks:", n)
           EOF
-      - name: Pre-seed empty kernel archives
+      - name: Pre-seed every archive the kernel script expects
         run: |
           TREE="$GITHUB_WORKSPACE/out/udon/tree"
           : > /tmp/empty-member
-          for rel in \
-            build/corecrypto-2023/libcorecrypto_kernel_noasm-namespaced.a \
-            build/armdt-platform/libArmDTPlatform.a \
-            build/armcpu/libArmCpu.a \
-            build/native-ufs/libNativeUfs.a \
-            build/native-aes/libNativeAES.a \
-            build/native-ram-block/libNativeRamBlock.a \
-            build/libpthread-kernel/libpthread_kernel.a \
-            build/libpthread-kernel/source_pthread_bootstrap.o \
-            build/udon-probe-stubs/libProbeStubs.a \
-            build/udon-ufs-bindings/libUfsBindings.a ; do
+          grep -hoE 'build/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.(a|o)' scripts/build-xnu-4k-baseline.sh device/configs/udon_defconfig | sort -u > /tmp/seeds.txt
+          wc -l < /tmp/seeds.txt
+          cat /tmp/seeds.txt
+          while read rel; do
             target="$TREE/$rel"
             mkdir -p "$(dirname "$target")"
             if [ "${target##*.}" = "a" ]; then
               rm -f "$target"
-              xcrun ar rc "$target" /tmp/empty-member || cp /tmp/empty-member "$target"
+              xcrun ar rc "$target" /tmp/empty-member
               xcrun ranlib "$target" 2>/dev/null || true
             else
               : > "$target"
             fi
-            ls -l "$target"
-          done
+          done < /tmp/seeds.txt
       - name: Build kernel
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -151,7 +143,7 @@ jobs:
             echo "=== archives ==="
             ls -l out/udon/kernel 2>/dev/null || true
             echo "=== step grep ==="
-            grep -n -i -E "error:|failed|Error|Traceback|No such file|not found|Undefined|no member" out/udon/logs/kernel-step.log | head -n 60 || true
+            grep -n -i -E "error:|failed|Error|Traceback|No such file|not found|Undefined" out/udon/logs/kernel-step.log | head -n 60 || true
             echo "=== archive logs ==="
             for f in out/udon/logs/archive-*.log; do
               [ -f "$f" ] || continue
@@ -159,9 +151,9 @@ jobs:
               tail -n 25 "$f" || true
             done
             echo "=== bootstrap tail ==="
-            tail -n 130 out/udon/logs/kernel-bootstrap.log 2>/dev/null || true
+            tail -n 100 out/udon/logs/kernel-bootstrap.log 2>/dev/null || true
             echo "=== kernel tail ==="
-            tail -n 240 out/udon/logs/kernel.log 2>/dev/null || true
+            tail -n 260 out/udon/logs/kernel.log 2>/dev/null || true
             echo "=== step tail ==="
             tail -n 90 out/udon/logs/kernel-step.log 2>/dev/null || true
           } > /tmp/kernel-tail.log
