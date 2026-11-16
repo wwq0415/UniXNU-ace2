@@ -124,7 +124,6 @@ jobs:
           TREE="$GITHUB_WORKSPACE/out/udon/tree"
           INDEX="$TREE/build/storage-abi/include"
           mkdir -p "$INDEX/IOKit/storage"
-          ls "$TREE/refer" 2>/dev/null || true
           if [ ! -f "$INDEX/IOKit/storage/IOBlockStorageDevice.h" ]; then
             rm -rf /tmp/iosf
             git clone --depth 1 https://github.com/apple-oss-distributions/IOStorageFamily.git /tmp/iosf || true
@@ -132,14 +131,15 @@ jobs:
               find /tmp/iosf -name '*.h' -maxdepth 2 -exec cp {} "$INDEX/IOKit/storage/" \;
             fi
           fi
-          if [ ! -f "$INDEX/IOKit/storage/IOBlockStorageDevice.h" ]; then
-            find "$TREE/refer" -maxdepth 3 -name 'IOBlockStorageDevice.h' -exec cp {} "$INDEX/IOKit/storage/" \; 2>/dev/null || true
+          for tc in "$(xcrun --sdk macosx --show-sdk-path)/usr/include/TargetConditionals.h" "$(xcrun --sdk iphoneos --show-sdk-path)/usr/include/TargetConditionals.h"; do
+            if [ -f "$tc" ]; then cp "$tc" "$INDEX/TargetConditionals.h"; echo "copied TargetConditionals from $tc"; break; fi
+          done
+          if [ ! -f "$INDEX/TargetConditionals.h" ]; then
+            found="$(find /Applications/Xcode_26.6.app/Contents/Developer -name TargetConditionals.h -maxdepth 8 2>/dev/null | head -n 1)"
+            if [ -n "$found" ]; then cp "$found" "$INDEX/TargetConditionals.h"; echo "copied TargetConditionals from $found"; fi
           fi
-          SDK="$(xcrun --sdk macosx --show-sdk-path)"
-          TC="$(find "$SDK" -name TargetConditionals.h 2>/dev/null | head -n 1)"
-          if [ -n "$TC" ]; then cp "$TC" "$INDEX/TargetConditionals.h"; fi
           ls "$INDEX/IOKit/storage" | head -n 20 || true
-          if [ -f "$INDEX/IOKit/storage/IOBlockStorageDevice.h" ]; then echo "IOBlockStorageDevice.h present"; else echo "IOBlockStorageDevice.h MISSING"; fi
+          ls -l "$INDEX/TargetConditionals.h" 2>/dev/null || echo "TargetConditionals MISSING"
       - name: Build kernel
         env:
           GITHUB_TOKEN: ${{ github.token }}
