@@ -1,0 +1,82 @@
+name: udon-build
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    steps:
+      - name: Get the pinned UniXNU core
+        run: |
+          git clone https://github.com/UniXNU/UniXNU.git .
+          git checkout 0597c81b4d571f4706f7bbcf03ca51fe5b6e868b
+          git log --oneline -1
+      - uses: actions/checkout@v4
+        with:
+          repository: takasugl/UniXNU-udon
+          ref: main
+          path: device
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Report the runner toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun --sdk iphoneos --find mig || echo "mig not found for iphoneos"
+      - name: Install host tools
+        run: |
+          brew install cmake ninja unifdef llvm mtools dtc ccache
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+      - name: Let the Apple source fetch use the job token
+        run: |
+          python3 - <<'EOF'
+          import pathlib
+          p = pathlib.Path("scripts/prepare-xnu-source.py")
+          src = p.read_text()
+          if "_auth_urlopen" in src:
+              print("already patched")
+              raise SystemExit(0)
+          shim = (
+              "import urllib.request as _u, os as _os\n"
+              "_orig_urlopen = _u.urlopen\n"
+              "def _auth_urlopen(url, *a, **k):\n"
+              "    req = _u.Request(url, headers={\"Authorization\": \"Bearer \" + _os.environ.get(\"GITHUB_TOKEN\", \"\"), \"Accept\": \"application/vnd.github+json\", \"User-Agent\": \"unixnu-ci\"})\n"
+              "    return _orig_urlopen(req, *a, **k)\n"
+              "_u.urlopen = _auth_urlopen\n"
+          )
+          p.write_text(src.replace("import urllib.request", shim, 1))
+          print("patched prepare-xnu-source.py")
+          EOF
+      - name: Select the device
+        run: |
+          ./unixnu defconfig udon_defconfig -D "$GITHUB_WORKSPACE/device"
+          ./unixnu fetch xnu libplatform libdispatch AvailabilityVersions libpthread corecrypto-2023 IOStorageFamily -D "$GITHUB_WORKSPACE/device"
+      - name: Build kernel
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p out/udon/logs
+          set -o pipefail
+          ./unixnu build kernel 2>&1 | tee out/udon/logs/kernel-step.log
+      - name: Upload outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: udon-build
+          path: |
+            out/**
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Clean up proprietary inputs
+        if: always()
+        run: |
+          rm -rf out/ipsw out/feeds device/.cache/firmware out/*/tree/.cache/firmware
