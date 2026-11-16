@@ -120,20 +120,26 @@ jobs:
           done < /tmp/seeds.txt
       - name: Pre-seed the storage ABI headers
         run: |
+          set -x
           TREE="$GITHUB_WORKSPACE/out/udon/tree"
-          mkdir -p "$TREE/build/storage-abi/include/IOKit/storage"
-          echo "--- tree top"
-          ls "$TREE" || true
-          echo "--- refer dirs"
+          INDEX="$TREE/build/storage-abi/include"
+          mkdir -p "$INDEX/IOKit/storage"
           ls "$TREE/refer" 2>/dev/null || true
-          echo "--- IOStorageFamily candidates"
-          find "$TREE/refer" -maxdepth 2 -iname '*StorageFamily*' 2>/dev/null | head -n 10 || true
-          cp "$TREE"/refer/IOStorageFamily/*.h "$TREE/build/storage-abi/include/IOKit/storage/" 2>/dev/null || echo "no refer headers copied"
+          if [ ! -f "$INDEX/IOKit/storage/IOBlockStorageDevice.h" ]; then
+            rm -rf /tmp/iosf
+            git clone --depth 1 https://github.com/apple-oss-distributions/IOStorageFamily.git /tmp/iosf || true
+            if [ -d /tmp/iosf ]; then
+              find /tmp/iosf -name '*.h' -maxdepth 2 -exec cp {} "$INDEX/IOKit/storage/" \;
+            fi
+          fi
+          if [ ! -f "$INDEX/IOKit/storage/IOBlockStorageDevice.h" ]; then
+            find "$TREE/refer" -maxdepth 3 -name 'IOBlockStorageDevice.h' -exec cp {} "$INDEX/IOKit/storage/" \; 2>/dev/null || true
+          fi
           SDK="$(xcrun --sdk macosx --show-sdk-path)"
-          cp "$SDK/usr/include/TargetConditionals.h" "$TREE/build/storage-abi/include/TargetConditionals.h" 2>/dev/null || echo "no TargetConditionals in SDK"
-          echo "--- storage-abi headers"
-          ls "$TREE/build/storage-abi/include/IOKit/storage" 2>/dev/null | head -n 12 || true
-          if [ -f "$TREE/build/storage-abi/include/IOKit/storage/IOBlockStorageDevice.h" ]; then echo "IOBlockStorageDevice.h present"; else echo "IOBlockStorageDevice.h MISSING"; fi
+          TC="$(find "$SDK" -name TargetConditionals.h 2>/dev/null | head -n 1)"
+          if [ -n "$TC" ]; then cp "$TC" "$INDEX/TargetConditionals.h"; fi
+          ls "$INDEX/IOKit/storage" | head -n 20 || true
+          if [ -f "$INDEX/IOKit/storage/IOBlockStorageDevice.h" ]; then echo "IOBlockStorageDevice.h present"; else echo "IOBlockStorageDevice.h MISSING"; fi
       - name: Build kernel
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -158,7 +164,7 @@ jobs:
             echo "=== archives ==="
             ls -l out/udon/kernel 2>/dev/null || true
             echo "=== step grep ==="
-            grep -n -i -E "error:|failed|Error|Traceback|No such file|not found|Undefined|MISSING" out/udon/logs/kernel-step.log | head -n 60 || true
+            grep -n -i -E "error:|failed|Error|Traceback|No such file|not found|Undefined|MISSING" out/udon/logs/kernel-step.log | head -n 70 || true
             echo "=== archive logs ==="
             for f in out/udon/logs/archive-*.log; do
               [ -f "$f" ] || continue
@@ -166,11 +172,11 @@ jobs:
               tail -n 30 "$f" || true
             done
             echo "=== kernel undef ==="
-            grep -n -A20 "Undefined symbols for architecture arm64" out/udon/logs/kernel.log 2>/dev/null | head -n 40 || true
+            grep -n -A25 "Undefined symbols for architecture arm64" out/udon/logs/kernel.log 2>/dev/null | head -n 50 || true
             echo "=== kernel tail ==="
-            tail -n 200 out/udon/logs/kernel.log 2>/dev/null || true
+            tail -n 220 out/udon/logs/kernel.log 2>/dev/null || true
             echo "=== step tail ==="
-            tail -n 70 out/udon/logs/kernel-step.log 2>/dev/null || true
+            tail -n 90 out/udon/logs/kernel-step.log 2>/dev/null || true
           } > /tmp/kernel-tail.log
           rm -rf /tmp/logrepo
           mkdir -p /tmp/logrepo
