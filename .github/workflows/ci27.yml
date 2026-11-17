@@ -1,5 +1,8 @@
 name: udon-ci27
 on:
+  push:
+    paths:
+      - '.github/workflows/ci27.yml'
   workflow_dispatch:
 permissions:
   contents: write
