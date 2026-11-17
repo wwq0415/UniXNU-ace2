@@ -180,6 +180,7 @@ jobs:
           void native_verified_block_volume_device (void) { }
           void sheng_pmgr_run (void) { }
           void native_ram_block_volume_seed (void) { }
+          void native_legacy_display_probe (void) { }
           EOF
           xcrun clang -target arm64-apple-ios17.0 -fno-stack-protector -c /tmp/bootseed/seeds.c -o /tmp/bootseed/seeds.o
           xcrun ar rc /tmp/bootseed/libBootstrapSeeds.a /tmp/bootseed/seeds.o
