@@ -130,6 +130,13 @@ jobs:
             if [ -d /tmp/iosf ]; then
               find /tmp/iosf -name '*.h' -maxdepth 2 -exec cp {} "$INDEX/IOKit/storage/" \;
             fi
+            mkdir -p "$TREE/refer/IOStorageFamily"
+            if [ -d /tmp/iosf ]; then
+              find /tmp/iosf -maxdepth 2 \( -name '*.h' -o -name '*.cpp' \) -exec cp {} "$TREE/refer/IOStorageFamily/" \;
+            fi
+            if [ -z "$(ls -A "$TREE/refer/IOStorageFamily" 2>/dev/null)" ]; then
+              echo "refer/IOStorageFamily still empty"
+            fi
           fi
           for tc in "$(xcrun --sdk macosx --show-sdk-path)/usr/include/TargetConditionals.h" "$(xcrun --sdk iphoneos --show-sdk-path)/usr/include/TargetConditionals.h"; do
             if [ -f "$tc" ]; then cp "$tc" "$INDEX/TargetConditionals.h"; echo "copied TargetConditionals from $tc"; break; fi
