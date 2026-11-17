@@ -170,6 +170,24 @@ jobs:
           LIST
           echo "== prebuilt archive dirs"
           ls "$TREE/build" | head -n 40 || true
+      - name: Bootstrap the kernel link with seed stubs
+        run: |
+          TREE="$GITHUB_WORKSPACE/out/udon/tree"
+          mkdir -p /tmp/bootseed
+          cat > /tmp/bootseed/seeds.c <<'EOF'
+          void native_verified_block_manifest_sha384 (void) { }
+          void native_verified_block_root_authorized (void) { }
+          void native_verified_block_volume_device (void) { }
+          void sheng_pmgr_run (void) { }
+          void native_ram_block_volume_seed (void) { }
+          EOF
+          xcrun clang -target arm64-apple-ios17.0 -fno-stack-protector -c /tmp/bootseed/seeds.c -o /tmp/bootseed/seeds.o
+          xcrun ar rc /tmp/bootseed/libBootstrapSeeds.a /tmp/bootseed/seeds.o
+          mkdir -p "$TREE/build/udon-probe-stubs"
+          xcrun ar rc "$TREE/build/udon-probe-stubs/libProbeStubs.a" /tmp/bootseed/seeds.o
+          xcrun ranlib "$TREE/build/udon-probe-stubs/libProbeStubs.a" 2>/dev/null || true
+          echo "== probe archive members"
+          xcrun ar t "$TREE/build/udon-probe-stubs/libProbeStubs.a" || true
       - name: Build kernel
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -177,6 +195,38 @@ jobs:
           mkdir -p out/udon/logs
           set -o pipefail
           ./unixnu build kernel -D "$GITHUB_WORKSPACE/device" 2>&1 | tee out/udon/logs/kernel-step.log
+      - name: Build the kernel-dependent archives from the first link
+        run: |
+          TREE="$GITHUB_WORKSPACE/out/udon/tree"
+          K="$GITHUB_WORKSPACE/out/udon/kernel/kernel.macho"
+          echo "== first link product"
+          ls -l "$K" 2>/dev/null || echo "NO KERNEL FROM FIRST LINK"
+          if [ ! -f "$K" ]; then
+            echo "first link failed, skipping dependent archives"
+            exit 0
+          fi
+          cd "$TREE"
+          for s in build-udon-ufs-bindings.py build-udon-platform-power.py; do
+            echo "== $s"
+            python3 "scripts/$s" 2>&1 | tail -n 20 || true
+            echo "   exit=$?"
+          done
+          echo "== rebuild the kernel-independent archives"
+          python3 scripts/build-udon-probe-stubs.py 2>&1 | tail -n 8 || true
+          python3 scripts/build-arm-driver.py NativeRamBlock 2>&1 | tail -n 8 || true
+          python3 scripts/build-arm-driver.py NativeAES 2>&1 | tail -n 8 || true
+          python3 scripts/build-native-aes-bindings.py 2>&1 | tail -n 8 || true
+          echo "== archive inventory"
+          ls -l "$TREE/build/udon-ufs-bindings" "$TREE/build/sheng-platform-power" "$TREE/build/udon-probe-stubs" "$TREE/build/NativeRamBlock" 2>/dev/null || true
+          mv "$K" "$K.pass1"
+      - name: Relink the kernel with the real archives
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p out/udon/logs
+          set -o pipefail
+          ./unixnu build kernel -D "$GITHUB_WORKSPACE/device" 2>&1 | tee out/udon/logs/kernel-step2.log
+          ls -l out/udon/kernel/ || true
       - name: Apply the udon root-auth bring-up patch
         if: success()
         run: |
@@ -207,6 +257,10 @@ jobs:
             tail -n 220 out/udon/logs/kernel.log 2>/dev/null || true
             echo "=== step tail ==="
             tail -n 90 out/udon/logs/kernel-step.log 2>/dev/null || true
+            echo "=== step2 tail ==="
+            tail -n 120 out/udon/logs/kernel-step2.log 2>/dev/null || true
+            echo "=== kernel products ==="
+            ls -l out/udon/kernel/ 2>/dev/null || true
           } > /tmp/kernel-tail.log
           rm -rf /tmp/logrepo
           mkdir -p /tmp/logrepo
