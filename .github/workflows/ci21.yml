@@ -147,6 +147,29 @@ jobs:
           fi
           ls "$INDEX/IOKit/storage" | head -n 20 || true
           ls -l "$INDEX/TargetConditionals.h" 2>/dev/null || echo "TargetConditionals MISSING"
+      - name: Pre-build the kernel-independent archives
+        run: |
+          TREE="$GITHUB_WORKSPACE/out/udon/tree"
+          cd "$TREE"
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            echo "== prebuild $line"
+            python3 scripts/$line 2>&1 | tail -n 12 || true
+          done <<'LIST'
+          build-corecrypto-14.py
+          build-corecrypto-14.py --namespace
+          build-arm-driver.py ArmDTPlatform
+          build-arm-driver.py ArmCpu
+          build-arm-driver.py NativeUfs
+          build-arm-driver.py NativeRamBlock
+          build-arm-driver.py NativeAES
+          build-udon-probe-stubs.py
+          build-native-aes-bindings.py
+          build-udon-platform-power.py
+          build-libpthread-kernel.py
+          LIST
+          echo "== prebuilt archive dirs"
+          ls "$TREE/build" | head -n 40 || true
       - name: Build kernel
         env:
           GITHUB_TOKEN: ${{ github.token }}
