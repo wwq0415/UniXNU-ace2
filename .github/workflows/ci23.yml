@@ -1,0 +1,305 @@
+name: udon-ci23
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+jobs:
+  build:
+    runs-on: macos-26-intel
+    timeout-minutes: 360
+    steps:
+      - name: Get the pinned UniXNU core
+        run: |
+          git clone https://github.com/UniXNU/UniXNU.git .
+          git checkout 0597c81b4d571f4706f7bbcf03ca51fe5b6e868b
+          git log --oneline -1
+      - uses: actions/checkout@v4
+        with:
+          repository: takasugl/UniXNU-udon
+          ref: main
+          path: device
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Report the runner toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+      - name: Install host tools
+        run: |
+          brew install cmake ninja unifdef llvm mtools dtc ccache
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+      - name: Bootstrap the udon core state
+        run: |
+          bash device/scripts/bootstrap-core.sh "$GITHUB_WORKSPACE"
+      - name: Let the Apple source fetch use the job token
+        run: |
+          python3 - <<'EOF'
+          import pathlib
+          p = pathlib.Path("scripts/prepare-xnu-source.py")
+          src = p.read_text()
+          if "_auth_urlopen" in src:
+              print("already patched")
+              raise SystemExit(0)
+          shim = (
+              "import urllib.request\n"
+              "import os as _os\n"
+              "_orig_urlopen = urllib.request.urlopen\n"
+              "def _auth_urlopen(url, *a, **k):\n"
+              "    req = urllib.request.Request(url, headers={\"Authorization\": \"Bearer \" + _os.environ.get(\"GITHUB_TOKEN\", \"\"), \"Accept\": \"application/vnd.github+json\", \"User-Agent\": \"unixnu-ci\"})\n"
+              "    return _orig_urlopen(req, *a, **k)\n"
+              "urllib.request.urlopen = _auth_urlopen\n"
+          )
+          p.write_text(src.replace("import urllib.request", shim, 1))
+          print("patched prepare-xnu-source.py")
+          EOF
+      - name: Seed the symbol the udon defconfig leaves out
+        run: |
+          mkdir -p /tmp/bootseed
+          cat > /tmp/bootseed/seeds.c <<'EOF'
+          void native_legacy_display_probe (void) { }
+          EOF
+          xcrun clang -target arm64-apple-ios17.0 -fno-stack-protector -c /tmp/bootseed/seeds.c -o /tmp/bootseed/seeds.o
+          xcrun ar rc /tmp/bootseed/libBootstrapSeeds.a /tmp/bootseed/seeds.o
+          xcrun ranlib /tmp/bootseed/libBootstrapSeeds.a 2>/dev/null || true
+          xcrun ar t /tmp/bootseed/libBootstrapSeeds.a
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("device/configs/udon_defconfig")
+          line = next((l for l in p.read_text().splitlines() if l.startswith("CONFIG_XNU_EXTRA_LD_ARCHIVES=")), None)
+          if line is None:
+              raise SystemExit("CONFIG_XNU_EXTRA_LD_ARCHIVES not found")
+          if "/tmp/bootseed/libBootstrapSeeds.a" in line:
+              print("already seeded")
+              raise SystemExit(0)
+          value = line.split("=", 1)[1]
+          if not (value.startswith(chr(34)) and value.endswith(chr(34))):
+              raise SystemExit("unexpected value: " + value)
+          new = line.replace(value, value[:-1] + " /tmp/bootseed/libBootstrapSeeds.a" + chr(34))
+          p.write_text(p.read_text().replace(line, new, 1))
+          print("defconfig:", new)
+          PY
+      - name: Select the device
+        run: |
+          ./unixnu defconfig udon_defconfig -D "$GITHUB_WORKSPACE/device"
+          ./unixnu fetch xnu libplatform libdispatch AvailabilityVersions libpthread corecrypto-2023 IOStorageFamily -D "$GITHUB_WORKSPACE/device"
+      - name: Make the firehose target compile as C11
+        run: |
+          python3 - <<'EOF'
+          from pathlib import Path
+          p = Path("scripts/build-firehose.sh")
+          s = p.read_text()
+          old = 'OTHER_CFLAGS="-fmodules-cache-path=$MODCACHE -include stdatomic.h"'
+          new = ('OTHER_CFLAGS="-mkernel -nostdinc -Wno-packed'
+                 ' -include $CLANG_RES/include/stdatomic.h"')
+          if old not in s:
+              print("ERROR: udon OTHER_CFLAGS line not found")
+              raise SystemExit(1)
+          s = s.replace(old, new, 1)
+          s = s.replace("GCC_TREAT_WARNINGS_AS_ERRORS=NO",
+                        "GCC_TREAT_WARNINGS_AS_ERRORS=NO GCC_C_LANGUAGE_STANDARD=gnu11", 1)
+          lines = s.splitlines()
+          for index, line in enumerate(lines):
+              if line.strip().startswith("xcodebuild install"):
+                  lines.insert(index, 'CLANG_RES="$(xcrun clang -print-resource-dir)"')
+                  break
+          s = "\n".join(lines) + "\n"
+          p.write_text(s)
+          print("patched build-firehose.sh")
+          EOF
+      - name: Defer every prebuilt input to the kernel archive builders
+        run: |
+          python3 - <<'EOF'
+          import re
+          from pathlib import Path
+          p = Path("scripts/build-xnu-4k-baseline.sh")
+          s = p.read_text()
+          pattern = r'^([ \t]*)test -f "\$[A-Z_0-9]+"\n'
+          s, n = re.subn(pattern,
+                         r'\1: # prebuilt input deferred to the kernel archive builders\n',
+                         s, flags=re.M)
+          p.write_text(s)
+          print("deferred prebuilt checks:", n)
+          EOF
+      - name: Pre-seed every archive the kernel script expects
+        run: |
+          TREE="$GITHUB_WORKSPACE/out/udon/tree"
+          : > /tmp/empty-member
+          grep -hoE 'build/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.(a|o)' scripts/build-xnu-4k-baseline.sh device/configs/udon_defconfig | sort -u > /tmp/seeds.txt
+          wc -l < /tmp/seeds.txt
+          while read rel; do
+            target="$TREE/$rel"
+            mkdir -p "$(dirname "$target")"
+            if [ "${target##*.}" = "a" ]; then
+              rm -f "$target"
+              xcrun ar rc "$target" /tmp/empty-member
+              xcrun ranlib "$target" 2>/dev/null || true
+            else
+              : > "$target"
+            fi
+          done < /tmp/seeds.txt
+      - name: Pre-seed the storage ABI headers
+        run: |
+          set -x
+          TREE="$GITHUB_WORKSPACE/out/udon/tree"
+          INDEX="$TREE/build/storage-abi/include"
+          mkdir -p "$INDEX/IOKit/storage"
+          if [ ! -f "$INDEX/IOKit/storage/IOBlockStorageDevice.h" ]; then
+            rm -rf /tmp/iosf
+            git clone --depth 1 https://github.com/apple-oss-distributions/IOStorageFamily.git /tmp/iosf || true
+            if [ -d /tmp/iosf ]; then
+              find /tmp/iosf -name '*.h' -maxdepth 2 -exec cp {} "$INDEX/IOKit/storage/" \;
+            fi
+            mkdir -p "$TREE/refer/IOStorageFamily"
+            if [ -d /tmp/iosf ]; then
+              find /tmp/iosf -maxdepth 2 \( -name '*.h' -o -name '*.cpp' \) -exec cp {} "$TREE/refer/IOStorageFamily/" \;
+            fi
+            if [ -z "$(ls -A "$TREE/refer/IOStorageFamily" 2>/dev/null)" ]; then
+              echo "refer/IOStorageFamily still empty"
+            fi
+          fi
+          for tc in "$(xcrun --sdk macosx --show-sdk-path)/usr/include/TargetConditionals.h" "$(xcrun --sdk iphoneos --show-sdk-path)/usr/include/TargetConditionals.h"; do
+            if [ -f "$tc" ]; then cp "$tc" "$INDEX/TargetConditionals.h"; echo "copied TargetConditionals from $tc"; break; fi
+          done
+          if [ ! -f "$INDEX/TargetConditionals.h" ]; then
+            found="$(find /Applications/Xcode_26.6.app/Contents/Developer -name TargetConditionals.h -maxdepth 8 2>/dev/null | head -n 1)"
+            if [ -n "$found" ]; then cp "$found" "$INDEX/TargetConditionals.h"; echo "copied TargetConditionals from $found"; fi
+          fi
+          ls "$INDEX/IOKit/storage" | head -n 20 || true
+          ls -l "$INDEX/TargetConditionals.h" 2>/dev/null || echo "TargetConditionals MISSING"
+      - name: Pre-build the kernel-independent archives
+        run: |
+          TREE="$GITHUB_WORKSPACE/out/udon/tree"
+          cd "$TREE"
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            echo "== prebuild $line"
+            python3 scripts/$line 2>&1 | tail -n 12 || true
+          done <<'LIST'
+          build-corecrypto-14.py
+          build-corecrypto-14.py --namespace
+          build-arm-driver.py ArmDTPlatform
+          build-arm-driver.py ArmCpu
+          build-arm-driver.py NativeUfs
+          build-arm-driver.py NativeRamBlock
+          build-arm-driver.py NativeAES
+          build-udon-probe-stubs.py
+          build-native-aes-bindings.py
+          build-udon-platform-power.py
+          build-libpthread-kernel.py
+          LIST
+          echo "== prebuilt archive dirs"
+          ls "$TREE/build" | head -n 40 || true
+      - name: Link once without the kernel-image archives
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("device/board.toml")
+          s = p.read_text()
+          keep = ["build-corecrypto-14.py", "build-corecrypto-14.py --namespace",
+                  "build-arm-driver.py ArmDTPlatform", "build-arm-driver.py ArmCpu",
+                  "build-arm-driver.py NativeUfs"]
+          start = s.index("archives = [")
+          end = s.index("]", start)
+          block = "archives = [" + chr(10) + "".join('  "%s",' % k + chr(10) for k in keep) + "]"
+          p.write_text(s[:start] + block + s[end + 1:])
+          print(block)
+          PY
+          mkdir -p out/udon/logs
+          set -o pipefail
+          ./unixnu build --skip-prelink kernel -D "$GITHUB_WORKSPACE/device" 2>&1 | tee out/udon/logs/kernel-step.log
+          ls -l out/udon/kernel/ || true
+      - name: Restore the full archive plan and link again
+        run: |
+          git -C device checkout -- board.toml
+          grep -c build- device/board.toml || true
+          mkdir -p out/udon/logs
+          set -o pipefail
+          ./unixnu build --skip-prelink kernel -D "$GITHUB_WORKSPACE/device" 2>&1 | tee out/udon/logs/kernel-step2.log
+          ls -l out/udon/kernel/ || true
+          shasum -a 256 out/udon/kernel/kernel.macho || true
+      - name: Apply the udon root-auth bring-up patch
+        if: success()
+        run: |
+          python3 scripts/udon-patch-root-auth-skip.py out/udon/kernel/kernel.macho
+          ls -l out/udon/kernel/
+          shasum -a 256 out/udon/kernel/kernel.macho
+      - name: Publish the kernel artifacts
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf /tmp/outrepo
+          mkdir -p /tmp/outrepo/kernel
+          cp -a out/udon/kernel/kernel.macho out/udon/kernel/kernel.json /tmp/outrepo/kernel/ 2>/dev/null || true
+          cp -a out/udon/logs/kernel.log out/udon/logs/kernel-step2.log /tmp/outrepo/kernel/ 2>/dev/null || true
+          ls -l /tmp/outrepo/kernel || true
+          cd /tmp/outrepo
+          git init -q
+          git config user.name ci
+          git config user.email ci@example.com
+          git add -A
+          git commit -qm "ci: kernel artifacts" || echo "nothing to publish"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/wwq0415/UniXNU-ace2.git" HEAD:refs/heads/kernel-out || true
+      - name: Publish the failure log
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "=== compile records ==="
+            ls -l out/udon/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json 2>/dev/null || echo "record missing"
+            echo "=== archives ==="
+            ls -l out/udon/kernel 2>/dev/null || true
+            echo "=== step grep ==="
+            grep -n -i -E "error:|failed|Error|Traceback|No such file|not found|Undefined|MISSING" out/udon/logs/kernel-step.log | head -n 70 || true
+            echo "=== archive logs ==="
+            for f in out/udon/logs/archive-*.log; do
+              [ -f "$f" ] || continue
+              echo "--- $f"
+              tail -n 30 "$f" || true
+            done
+            echo "=== extra archives ==="
+            grep -n "EXTRA_LD_ARCHIVES" device/configs/udon_defconfig || true
+            echo "=== kernel undef ==="
+            grep -n -A30 "Undefined symbols for architecture arm64" out/udon/logs/kernel.log 2>/dev/null | head -n 80 || true
+            echo "=== bootstrap undef ==="
+            grep -n -A30 "Undefined symbols for architecture arm64" out/udon/logs/kernel-bootstrap.log 2>/dev/null | head -n 80 || true
+            echo "=== kernel tail ==="
+            tail -n 220 out/udon/logs/kernel.log 2>/dev/null || true
+            echo "=== step tail ==="
+            tail -n 90 out/udon/logs/kernel-step.log 2>/dev/null || true
+            echo "=== step2 tail ==="
+            tail -n 120 out/udon/logs/kernel-step2.log 2>/dev/null || true
+            echo "=== kernel products ==="
+            ls -l out/udon/kernel/ 2>/dev/null || true
+          } > /tmp/kernel-tail.log
+          rm -rf /tmp/logrepo
+          mkdir -p /tmp/logrepo
+          cd /tmp/logrepo
+          git init -q
+          git config user.name ci
+          git config user.email ci@example.com
+          cp /tmp/kernel-tail.log kernel-build-tail.log
+          git add kernel-build-tail.log
+          git commit -qm "ci: kernel build log tail"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/wwq0415/UniXNU-ace2.git" HEAD:refs/heads/ci-log
+      - name: Upload outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: udon-ci21
+          path: |
+            out/**
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Clean up proprietary inputs
+        if: always()
+        run: |
+          rm -rf out/ipsw out/feeds device/.cache/firmware out/*/tree/.cache/firmware
