@@ -1,0 +1,28 @@
+== submodules /Users/runner/work/UniXNU-ace2/UniXNU-ace2
+== submodules /Users/runner/work/UniXNU-ace2/UniXNU-ace2/device
+== tree /Users/runner/work/UniXNU-ace2/UniXNU-ace2/out/udon/tree
+== kernel: XNU
+== kernel: archive 1/12: build-corecrypto-14.py
++ python3 /Users/runner/work/UniXNU-ace2/UniXNU-ace2/out/udon/tree/scripts/build-corecrypto-14.py
+== kernel: archive 2/12: build-corecrypto-14.py --namespace
++ python3 /Users/runner/work/UniXNU-ace2/UniXNU-ace2/out/udon/tree/scripts/build-corecrypto-14.py --namespace
+== kernel: archive 3/12: build-arm-driver.py ArmDTPlatform
++ python3 /Users/runner/work/UniXNU-ace2/UniXNU-ace2/out/udon/tree/scripts/build-arm-driver.py ArmDTPlatform
+== kernel: archive 4/12: build-arm-driver.py ArmCpu
++ python3 /Users/runner/work/UniXNU-ace2/UniXNU-ace2/out/udon/tree/scripts/build-arm-driver.py ArmCpu
+== kernel: archive 5/12: build-arm-driver.py NativeUfs
++ python3 /Users/runner/work/UniXNU-ace2/UniXNU-ace2/out/udon/tree/scripts/build-arm-driver.py NativeUfs
+== kernel: archive 6/12: build-udon-ufs-bindings.py
++ python3 /Users/runner/work/UniXNU-ace2/UniXNU-ace2/out/udon/tree/scripts/build-udon-ufs-bindings.py
+Traceback (most recent call last):
+  File "/Users/runner/work/UniXNU-ace2/UniXNU-ace2/out/udon/tree/scripts/build-udon-ufs-bindings.py", line 89, in <module>
+    kernel = kernel_path.read_bytes()
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/pathlib.py", line 1019, in read_bytes
+    with self.open(mode='rb') as f:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/runner/work/UniXNU-ace2/UniXNU-ace2/out/udon/kernel/kernel.macho'
+unixnu: python3 failed (1); full log: /Users/runner/work/UniXNU-ace2/UniXNU-ace2/out/udon/logs/archive-06-build-udon-ufs-bindings.log
